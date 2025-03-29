@@ -42,47 +42,67 @@ print("bme280 T&H I2C address:0X76")
 
 # Relevant sensor info 
 current_acceleration = 0
+# For nap detection
+recent_stillness = []
+still_seconds_count = [0] # Use 1x1 arr instead of int so it can be passed like a ptr
+# For play detection
 recent_movement = []
-still_count = [0] # Use 1x1 arr instead of int so it can be passed like a ptr
+movement_seconds_count = [0] # Use 1x1 arr instead of int so it can be passed like a ptr
 
-def detect_nap(last_accel, current_accel, accel_delta, rec_movement, still_ct):
+def detect_nap(last_accel, current_accel, accel_delta, rec_stillness, still_sec_ct):
     # Check if change in acceleration was substantial
     if accel_delta <= 1000:
         print('current acceleration %d and last acceleration %d within 1000'%(current_accel, last_accel))
         print("position change = %d" %accel_delta)
-        print(still_ct[0])
-        print(rec_movement)
+        print(still_sec_ct[0])
+        print(rec_stillness)
         # No substantial movement = 0
-        rec_movement.append(0)
+        rec_stillness.append(0)
         # Keep recent history to last 10 movements
-        if len(rec_movement) > 10:
-            rec_movement.pop(0)
+        if len(rec_stillness) > 10:
+            rec_stillness.pop(0)
         # Count how long the host has been still
-        still_ct[0]+=1
-        if still_ct[0] == 60:
+        still_sec_ct[0]+=1
+        if still_sec_ct[0] == 60:
             print("NAP STARTED")
             print(time.localtime())
         # If the host has been still for a minute or more they are napping
-        if still_ct[0] >= 60:
-            print("ACTIVE NAP: %d seconds" %still_ct[0])
+        if still_sec_ct[0] >= 60:
+            print("ACTIVE NAP: %d seconds" %still_sec_ct[0])
     else:
-        print('movement detected: last position = %d | current position = %d'%(last_accel, current_accel))
+        print('movement detected: last acceleration = %d | current acceleration = %d'%(last_accel, current_accel))
         print("position change = %d" %accel_delta)
         # Substantial movement = 1
-        rec_movement.append(1)
+        rec_stillness.append(1)
         # Cache the last 10 seconds worth of movement
-        if len(rec_movement) > 10:
-            rec_movement.pop(0)
+        if len(rec_stillness) > 10:
+            rec_stillness.pop(0)
         # Check if there has been frequent movement during the last 10 seconds 
-        if sum(rec_movement) >= 5:
+        if sum(rec_stillness) >= 5:
             # End nap if one was active
-            if still_ct[0] >= 60: 
-                print("NAP END: %d second nap" %still_ct[0])
+            if still_sec_ct[0] >= 60: 
+                print("NAP END: %d second nap" %still_sec_ct[0])
                 print(time.localtime())
-            still_ct[0] = 0
+            still_sec_ct[0] = 0
     print("==================================================")
 
-
+def detect_play(last_accel, current_accel, accel_delta, rec_movement, movement_sec_ct):
+    # Check if change in acceleration was substantial
+    if accel_delta >= 4000:
+        # Substantial movement = 1
+        rec_movement.append(1)
+        movement_sec_ct[0] += 1
+    else:
+        # No substantial movement = 0
+        rec_movement.append(0)
+   
+    # Cache the last 30 seconds worth of movement
+    if len(rec_movement) > 30:
+        rec_movement.pop(0)
+    # Check for substantial movement in the last 30 seconds
+    if len(rec_movement) == 30 and sum(rec_movement) > 5:
+        print("ACTIVE PLAYTIME: %d seconds")
+        print(time.localtime())
 
 try:
  while True:
@@ -102,12 +122,13 @@ try:
         icm = []
         icm = mpu.ReadAll()
 
-        # NAP PROCESSING
+        # NAP/PLAY PROCESSING
         last_acceleration = current_acceleration
         current_acceleration = math.sqrt(icm[3]**2 + icm[4]**2 + icm[5]**2)
         acceleration_delta = abs(current_acceleration - last_acceleration)
 
-        detect_nap(last_acceleration, current_acceleration, acceleration_delta, recent_movement, still_count)
+        detect_nap(last_acceleration, current_acceleration, acceleration_delta, recent_stillness, still_seconds_count)
+        detect_play(last_acceleration, current_acceleration, acceleration_delta, recent_movement, movement_seconds_count)
         #print("pressure : %7.2f hPa" %pressure)
         #print("temp : %-6.2f ℃" %temp)
         #print("hum : %6.2f ％" %hum)
@@ -122,5 +143,3 @@ try:
         #time.sleep(0.1)
 except KeyboardInterrupt:
     exit()
-
-
