@@ -1,145 +1,157 @@
-#!/usr/bin/python
-# -*- coding:utf-8 -*-
-import time
-import ICM20948 #Gyroscope/Acceleration/Magnetometer
-import MPU925x #Gyroscope/Acceleration/Magnetometer
-import BME280   #Atmospheric Pressure/Temperature and humidity
-import LTR390   #UV
-import TSL2591  #LIGHT
-import SGP40
-import VOC_Algorithm
 import math
-import machine
+import time
+from pimoroni import RGBLED
+from picographics import PicoGraphics, DISPLAY_PICO_DISPLAY
+import BME280
+import ICM20948
 from machine import Pin, I2C
 
-MPU_VAL_WIA = 0x71
-MPU_ADD_WIA = 0x75
+# Display setup
+display = PicoGraphics(display=DISPLAY_PICO_DISPLAY, rotate=0)
+display.set_backlight(0.5)
+BLACK = display.create_pen(0, 0, 0)
+WHITE = display.create_pen(255, 255, 255)
+
+# BME280 setup
+bus = I2C(0, scl=Pin(21), sda=Pin(20), freq=400_000)
+bme280 = BME280.BME280()
+bme280.get_calib_param()
+
+# ICM20948 setup
 ICM_VAL_WIA = 0xEA
 ICM_ADD_WIA = 0x00
 ICM_SLAVE_ADDRESS = 0x68
-bus = I2C(0,scl=Pin(21),sda=Pin(20),freq=400_000)
-
-bme280 = BME280.BME280()
-bme280.get_calib_param()
-light = TSL2591.TSL2591()
-sgp = SGP40.SGP40()
-voc_sgp = VOC_Algorithm.VOC_Algorithm()
-uv = LTR390.LTR390()
-
 device_id1 = int.from_bytes(bus.readfrom_mem(int(ICM_SLAVE_ADDRESS), int(ICM_ADD_WIA), 1), 'big')
-device_id2 = int.from_bytes(bus.readfrom_mem(int(ICM_SLAVE_ADDRESS), int(MPU_ADD_WIA), 1), 'big')
 if device_id1 == ICM_VAL_WIA:
     mpu = ICM20948.ICM20948()
-    print("ICM20948 9-DOF I2C address:0X68")
-elif device_id2 == MPU_VAL_WIA:
-    mpu = MPU925x.MPU925x()
-    print("MPU925x 9-DOF I2C address:0X68")
-    
-print("TSL2591 Light I2C address:0X29")
-print("LTR390 UV I2C address:0X53")
-print("SGP40 VOC I2C address:0X59")
-print("bme280 T&H I2C address:0X76")
 
-# Relevant sensor info 
+# RGB LED setup
+led = RGBLED(6, 7, 8)
+
+# Temperature colors (simplified for LED only)
+temp_min = 10
+temp_max = 30
+colors = [(0, 0, 255), (0, 255, 0), (255, 255, 0), (255, 0, 0)]
+
+# Acceleration setup
+movement_buffer = []
+stillness_counter = 0
 current_acceleration = 0
-# For nap detection
-recent_stillness = []
-still_seconds_count = [0] # Use 1x1 arr instead of int so it can be passed like a ptr
-# For play detection
-recent_movement = []
-movement_seconds_count = [0] # Use 1x1 arr instead of int so it can be passed like a ptr
+active_nap_flag = False
 
-def detect_nap(last_accel, current_accel, accel_delta, rec_stillness, still_sec_ct):
-    # Check if change in acceleration was substantial
-    if accel_delta <= 1000:
-        print('current acceleration %d and last acceleration %d within 1000'%(current_accel, last_accel))
-        print("position change = %d" %accel_delta)
-        print(still_sec_ct[0])
-        print(rec_stillness)
+def movement_monitor():
+    global movement_buffer
+    global stillness_counter
+    global current_acceleration
+    global last_acceleration
+    global acceleration_delta
+    global active_nap_flag
+
+    # No substantial movement
+    if acceleration_delta <= 1000:
+        print('current acceleration %d and last acceleration %d within 1000'%(current_acceleration, last_acceleration))
+        print("acceleration change = %d" %acceleration_delta)
+        print(stillness_counter)
+        print(movement_buffer)
         # No substantial movement = 0
-        rec_stillness.append(0)
-        # Keep recent history to last 10 movements
-        if len(rec_stillness) > 10:
-            rec_stillness.pop(0)
+        movement_buffer.append(0)
+        # Cache the last 2 minutes of movement history
+        if len(movement_buffer) > 120:
+            movement_buffer.pop(0)
         # Count how long the host has been still
-        still_sec_ct[0]+=1
-        if still_sec_ct[0] == 60:
+        stillness_counter+=1
+        # If the host has been still for the last minute
+        if stillness_counter == 60:
+            active_nap_flag = True
             print("NAP STARTED")
             print(time.localtime())
         # If the host has been still for a minute or more they are napping
-        if still_sec_ct[0] >= 60:
-            print("ACTIVE NAP: %d seconds" %still_sec_ct[0])
-    else:
-        print('movement detected: last acceleration = %d | current acceleration = %d'%(last_accel, current_accel))
-        print("position change = %d" %accel_delta)
+        if active_nap_flag == True:
+            print("ACTIVE NAP: %d seconds" %stillness_counter)
+    # Minor movement
+    elif 1000 < acceleration_delta < 4000:
+        print('minor movement detected: last acceleration = %d | current acceleration = %d'%(last_acceleration, current_acceleration))
+        print("acceleration change = %d" %acceleration_delta)
         # Substantial movement = 1
-        rec_stillness.append(1)
-        # Cache the last 10 seconds worth of movement
-        if len(rec_stillness) > 10:
-            rec_stillness.pop(0)
+        movement_buffer.append(1)
+        # Cache the last 2 minutes of movement history
+        if len(movement_buffer) > 120:
+            movement_buffer.pop(0)
         # Check if there has been frequent movement during the last 10 seconds 
-        if sum(rec_stillness) >= 5:
+        if sum(movement_buffer[-10:]) >= 5:
             # End nap if one was active
-            if still_sec_ct[0] >= 60: 
-                print("NAP END: %d second nap" %still_sec_ct[0])
+            if active_nap_flag == True:
+                active_nap_flag = False 
+                print("NAP END: %d second nap" %stillness_counter)
                 print(time.localtime())
-            still_sec_ct[0] = 0
+            stillness_counter = 0
+    # Major movement
+    elif acceleration_delta > 4000:
+        print('major movement detected: last acceleration = %d | current acceleration = %d'%(last_acceleration, current_acceleration))
+        print("acceleration change = %d" %acceleration_delta)
+        # Major movement = 2
+        movement_buffer.append(2)
+        # Cache the last 2 minutes of movement history
+        if len(movement_buffer) > 120:
+            movement_buffer.pop(0)
+        # Check if there has been frequent movement during the last 10 seconds 
+        if sum(movement_buffer[-10:]) >= 5:
+            # End nap if one was active
+            if active_nap_flag == True:
+                active_nap_flag = False 
+                print("NAP END: %d second nap" %stillness_counter)
+                print(time.localtime())
+            stillness_counter = 0
     print("==================================================")
 
-def detect_play(last_accel, current_accel, accel_delta, rec_movement, movement_sec_ct):
-    # Check if change in acceleration was substantial
-    if accel_delta >= 4000:
-        # Substantial movement = 1
-        rec_movement.append(1)
-        movement_sec_ct[0] += 1
-    else:
-        # No substantial movement = 0
-        rec_movement.append(0)
-   
-    # Cache the last 30 seconds worth of movement
-    if len(rec_movement) > 30:
-        rec_movement.pop(0)
-    # Check for substantial movement in the last 30 seconds
-    if len(rec_movement) == 30 and sum(rec_movement) > 5:
-        print("ACTIVE PLAYTIME: %d seconds")
-        print(time.localtime())
+def temperature_to_color(temp):
+    temp = min(temp, temp_max)
+    temp = max(temp, temp_min)
+    f_index = float(temp - temp_min) / float(temp_max - temp_min)
+    f_index *= len(colors) - 1
+    index = int(f_index)
+    if index == len(colors) - 1:
+        return colors[index]
+    blend_b = f_index - index
+    blend_a = 1.0 - blend_b
+    a = colors[index]
+    b = colors[index + 1]
+    return [int((a[i] * blend_a) + (b[i] * blend_b)) for i in range(3)]
 
-try:
- while True:
-        time.sleep(1)
-        bme = []
-        bme = bme280.readData()
-        pressure = round(bme[0], 2) 
-        temp = round(bme[1], 2) 
-        hum = round(bme[2], 2)
-        
-        lux = round(light.Lux(), 2)
-        
-        uvs = uv.UVS()
-        
-        gas = round(sgp.raw(), 2)
-        voc = voc_sgp.VocAlgorithm_process(gas)
-        icm = []
-        icm = mpu.ReadAll()
+while True:
+    # Clear display
+    display.set_pen(BLACK)
+    display.clear()
 
-        # NAP/PLAY PROCESSING
-        last_acceleration = current_acceleration
-        current_acceleration = math.sqrt(icm[3]**2 + icm[4]**2 + icm[5]**2)
-        acceleration_delta = abs(current_acceleration - last_acceleration)
+    # Get BME280 readings
+    bme = bme280.readData()
+    temperature = round(bme[1], 2)
+    pressure = round(bme[0], 2) 
+    humidity = round(bme[2], 2)
+    
+    # Get acceleration reading from ICM20948
+    icm = []
+    icm = mpu.ReadAll()
+    last_acceleration = current_acceleration
+    current_acceleration = math.sqrt(icm[3]**2 + icm[4]**2 + icm[5]**2)
+    acceleration_delta = abs(current_acceleration - last_acceleration)
+    
+    
+    # Set LED color based on temperature
+    led.set_rgb(*temperature_to_color(temperature))
 
-        detect_nap(last_acceleration, current_acceleration, acceleration_delta, recent_stillness, still_seconds_count)
-        detect_play(last_acceleration, current_acceleration, acceleration_delta, recent_movement, movement_seconds_count)
-        #print("pressure : %7.2f hPa" %pressure)
-        #print("temp : %-6.2f ℃" %temp)
-        #print("hum : %6.2f ％" %hum)
-        #print("lux : %d " %lux)
-        #print("uv : %d " %uvs)
-        #print("gas : %6.2f " %gas)
-        #print("VOC : %d " %voc)
-        #print('Roll = %.2f , Pitch = %.2f , Yaw = %.2f'%(icm[0],icm[1],icm[2]))
-        #print('Acceleration:  X = %d , Y = %d , Z = %d'%(icm[3],icm[4],icm[5]))  
-        #print('Gyroscope:     X = %d , Y = %d , Z = %d'%(icm[6],icm[7],icm[8]))
-        #print('Magnetic:      X = %d , Y = %d , Z = %d'%((icm[9]),icm[10],icm[11]))
-        #time.sleep(0.1)
-except KeyboardInterrupt:
-    exit()
+    # Monitor movement
+    movement_monitor()
+
+    # Draw temperature text (larger, centered)
+    display.set_pen(WHITE)
+    
+    # Display temperature
+    display.text("Temperature: {:.1f}°C".format(temperature), 0, 120, 200, 2)
+    
+    # Additional data
+    display.text("Humidity: {:.1f} RH".format(humidity), 0, 100, 200, 2)
+
+    # Update display
+    display.update()
+    time.sleep(1)
