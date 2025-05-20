@@ -35,17 +35,33 @@ colors = [(0, 0, 255), (0, 255, 0), (255, 255, 0), (255, 0, 0)]
 
 # Acceleration setup
 movement_buffer = []
-stillness_counter = 0
 current_acceleration = 0
+
+# Nap detection
+stillness_counter = 0
 active_nap_flag = False
+naps = 0
+
+# Play detection
+playtime_counter = 30 # instantiate at 30 seconds because thats how much time it takes to detect playtime
+playtime_counter_min = 0
+playtime_counter_remainder = 0
+active_playtime_flag = False
+playtimes = 0
 
 def movement_monitor():
     global movement_buffer
-    global stillness_counter
     global current_acceleration
     global last_acceleration
     global acceleration_delta
+    global stillness_counter
     global active_nap_flag
+    global naps
+    global playtime_counter
+    global playtime_counter_remainder
+    global playtime_counter_min
+    global active_playtime_flag
+    global playtimes
 
     # No substantial movement
     if acceleration_delta <= 1000:
@@ -55,14 +71,12 @@ def movement_monitor():
         print(movement_buffer)
         # No substantial movement = 0
         movement_buffer.append(0)
-        # Cache the last 2 minutes of movement history
-        if len(movement_buffer) > 120:
-            movement_buffer.pop(0)
         # Count how long the host has been still
         stillness_counter+=1
         # If the host has been still for the last minute
         if stillness_counter == 60:
             active_nap_flag = True
+            naps += 1
             print("NAP STARTED")
             print(time.localtime())
         # If the host has been still for a minute or more they are napping
@@ -72,36 +86,39 @@ def movement_monitor():
     elif 1000 < acceleration_delta < 4000:
         print('minor movement detected: last acceleration = %d | current acceleration = %d'%(last_acceleration, current_acceleration))
         print("acceleration change = %d" %acceleration_delta)
-        # Substantial movement = 1
-        movement_buffer.append(1)
-        # Cache the last 2 minutes of movement history
-        if len(movement_buffer) > 120:
-            movement_buffer.pop(0)
-        # Check if there has been frequent movement during the last 10 seconds 
-        if sum(movement_buffer[-10:]) >= 5:
-            # End nap if one was active
-            if active_nap_flag == True:
-                active_nap_flag = False 
-                print("NAP END: %d second nap" %stillness_counter)
-                print(time.localtime())
-            stillness_counter = 0
+        # Minor movement = 1
+        movement_buffer.append(1) 
     # Major movement
     elif acceleration_delta > 4000:
         print('major movement detected: last acceleration = %d | current acceleration = %d'%(last_acceleration, current_acceleration))
         print("acceleration change = %d" %acceleration_delta)
         # Major movement = 2
         movement_buffer.append(2)
-        # Cache the last 2 minutes of movement history
-        if len(movement_buffer) > 120:
-            movement_buffer.pop(0)
-        # Check if there has been frequent movement during the last 10 seconds 
-        if sum(movement_buffer[-10:]) >= 5:
-            # End nap if one was active
-            if active_nap_flag == True:
-                active_nap_flag = False 
-                print("NAP END: %d second nap" %stillness_counter)
-                print(time.localtime())
-            stillness_counter = 0
+    
+    # Cache the last 2 minutes of movement history
+    if len(movement_buffer) > 120:
+        movement_buffer.pop(0)
+
+    # Check if there has been frequent movement during the last 10 seconds 
+    if sum(movement_buffer[-10:]) >= 5:
+        # End nap if one was active
+        if active_nap_flag == True:
+            print("NAP END: %d second nap" %stillness_counter)
+            print(time.localtime())
+            active_nap_flag = False 
+        stillness_counter = 0
+        # If there is frequent major movement check for playtime
+        if sum(movement_buffer[-20:]) >= 30:
+            print("ACTIVE PLAYTIME: %d seconds" %playtime_counter)
+            playtime_counter += 1
+            active_playtime_flag = True
+        # If playtime was active but not any longer
+        elif active_playtime_flag == True:
+            print("PLAYTIME END: %d seconds of play" %playtime_counter)
+            active_playtime_flag = False
+            playtime_counter_min = playtime_counter/60
+            playtime_counter_remainder = playtime_counter%60            
+            playtimes += 1
     print("==================================================")
 
 def temperature_to_color(temp):
@@ -136,21 +153,24 @@ while True:
     current_acceleration = math.sqrt(icm[3]**2 + icm[4]**2 + icm[5]**2)
     acceleration_delta = abs(current_acceleration - last_acceleration)
     
-    
     # Set LED color based on temperature
     led.set_rgb(*temperature_to_color(temperature))
 
-    # Monitor movement
+    # Monitor movement based on acceleration data
     movement_monitor()
 
     # Draw temperature text (larger, centered)
     display.set_pen(WHITE)
-    
-    # Display temperature
-    display.text("Temperature: {:.1f}°C".format(temperature), 0, 120, 200, 2)
-    
+
+    # Display acceleration info
+    display.text("Naps Taken: %d" %naps, 0, 60, 200, 2)
+    display.text("Play: %d min, %d sec" %(playtime_counter_min, playtime_counter_remainder), 0, 80, 200, 2)
+
     # Additional data
     display.text("Humidity: {:.1f} RH".format(humidity), 0, 100, 200, 2)
+
+    # Display temperature
+    display.text("Temperature: {:.1f}°C".format(temperature), 0, 120, 200, 2)
 
     # Update display
     display.update()
